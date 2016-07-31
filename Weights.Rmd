@@ -1,0 +1,151 @@
+---
+title: "Are you lifting your weights correctly ?"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Abstract
+
+Human activity recognition, based on sensor collected data, is a vibrant research area. In this analysis, a large dataset is used to create predictive models that use sensor data to classify how well a particular wight lifting exercise is executed.  Random Forest and Generalized Boosting Regression Models are created, and their accuracy examined.  Models with 52 and 24 features are examined.  Finally, a Random Forest model with 24 predictors is chosen.  The accuracy of this model against a validation dataset is **99.25%**.  The predictions on the test data were 100% accurate.
+
+#### Exploring the data
+
+A weight lifting exercise [dataset](http://groupware.les.inf.puc-rio.br/har) was used to conduct this analysis.  The data were collected from 6 healthy, young participants.  Each of the participants was asked to perform the Unilateral Dumbbell Biceps Curl in five different fashions - exactly according to specification (Class A),throwing the elbows to the front (Class B), lifting the dumbbell only halfway(Class C), lowering the dumbbell only halfway (Class D), and throwing the hips to the front (Class D).  Sensorsinstalled on each participant included (a) a belt sensor, (b) a forearm sensor, (c) and arm sensor,and (d) a dumbbell sensor.  The objective is to use the sensor-generated data to classify the 
+bicep curl as one of the 5 defined classes.
+
+The "training" data includes about 200,000 measurements, and the testing data includes 20 measurements.
+Each measurement consists of 160 features.  However, upon closer examination it was discovered that 
+data were not available for a significant number of variables.  Removing the features with a significant number of "NA" entries, reduced the number of features from 160 to just about 60.  A few features
+related to date/timestamp of measurement were removed from the dataset - this is because the 
+intent is to create a model that can classify activity based on sensor measured data, regardless of date/timestamp. New training and testing sets were created containing (a) user name, (b) 52 sensor measurements with no NA values, and (c) class of activity
+
+```{r Data - download and exploration, cache=TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pmltrng.csv")
+training=read.csv("pmltrng.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pmltest.csv")
+testing=read.csv("pmltest.csv")
+
+tt<-lapply(1:160, function (x) sum(is.na(testing[,x])/length(testing[,x]))) # Find columns with NA values 
+newtrn<-training[,-c(which(tt!=0))] # Only keep columns that have no NAs in both training and testing sets
+newtrn<-newtrn[,-c(1,3:7)] # Remove non-features, like date, timsestamp etc.
+newtst<-testing[,-c(which(tt!=0))]
+newtst<-newtst[,-c(1,3:7)]
+names(newtrn)
+```
+
+####Model Selection
+
+Two models were created to predict class of activity based on sensor data.  One model used a Random Forests (RF) algorithm, and the second used a Generalized Boosted Regression approach (GBM).
+
+The training data set was itself split two sets - one for training, and the second as a validation set
+to examine out-of-sample performance.  The testing set was reserved for final predictions.
+
+In training the models, 10-fold cross validation was employed.  10-fold was chosen as a first attempt,
+with other approaches to be explored if there was desire to further increase the accuracy.  Given the
+relatively large size of the data set, it was expected that 3-fold or leave-one-out cross-validation would consume more computing resources.  After the models were trained, predictions were made on the validation set. The accuracies were **99.49% for RF** and **96.15% for GBM**.
+
+```{r Training and Validation Data Sets, cache=TRUE,warning=FALSE,message=FALSE}
+
+library(caret)
+
+set.seed(3233)
+inTrain = createDataPartition(newtrn$classe, p = 3/4)[[1]] 
+newtrntrn = newtrn[ inTrain,]
+newtrnval = newtrn[-inTrain,]
+```
+
+```{r Random Forest Model Fit, cache=TRUE, warning=FALSE, message = FALSE}
+rfmodel<-train(classe~.,method="rf",data=newtrntrn, trControl=trainControl(method="cv",number=10))
+```
+
+```{r GBM Model Fit, cache=TRUE, warning=FALSE, message = FALSE}
+set.seed(3233)
+gbmmodel<-train(classe~.,method="gbm",data=newtrntrn, verbose=FALSE,trControl=trainControl(method="cv",number=10))
+```
+
+```{r Model accuracy, cache=TRUE,warning=FALSE,message=FALSE}
+
+rfval<-predict(rfmodel,newtrnval) #RF prediction on validation set
+print(paste("Accuracy of RF Model on Validation Set (%):  ",round(100*sum(rfval==newtrnval$classe)/length(rfval),2))) # Accuracy of RF prediction on validation set
+
+gbmval<-predict(gbmmodel,newtrnval) # GBM prediction on validation set
+print(paste("Accuracy of GBM Model on Validation Set:  ",round(100*sum(gbmval==newtrnval$classe)/length(gbmval),2))) # Accuracy of GBM prediction on validation set
+```
+
+In the next step, the importance of the predictors was examined.  The top 20 variables of importance
+in the RF and GBM models were identified.  A significant overlap was observed, though the top 20 variables were not identical.  
+
+```{r Plot important predictors, cache=TRUE}
+# Plot Top 20 features by importance
+plot(varImp(rfmodel),20,main="Random Forest Top 20 Features")
+plot(varImp(gbmmodel),20,main="GBM Top 20 Features")
+```
+
+Four predictors in the top 20 for RF were not in the GBM model and vice versa.  The lists were combined to create a short list of 24 predictors.  New training, validation, and test sets were created with this smaller feature list.
+
+```{r Dataset with top 24 features, warning=FALSE,message=FALSE,cache=TRUE}
+
+library(caret)
+# Feature selection - Top 20 from RF and GBM
+ 
+ImpMeasure<-data.frame(varImp(rfmodel)$importance)
+ImpMeasure$Vars<-row.names(ImpMeasure)
+top20rf<-ImpMeasure[order(-ImpMeasure$Overall),][1:20,] # Top 20 for RF
+
+ImpMeasure<-data.frame(varImp(gbmmodel)$importance)
+ImpMeasure$Vars<-row.names(ImpMeasure)
+top20gbm<-ImpMeasure[order(-ImpMeasure$Overall),][1:20,] # Top 20 for GBM
+
+top24feats<-c(top20rf$Vars,top20gbm$Vars[which(!top20gbm$Vars%in%top20rf$Vars)]) # Merge the two top 20 lists
+
+# Create new testing, training, validation sets with smaller number of features
+tf24trn<-training[,top24feats]
+tf24trn$classe<-training$classe
+
+tf24tst<-testing[,top24feats]
+tf24tst$classe<-testing$classe
+
+set.seed(3233)
+inTrain = createDataPartition(tf24trn$classe, p = 3/4)[[1]] 
+tf24trntrn = tf24trn[ inTrain,]
+tf24trnval = tf24trn[-inTrain,]
+names(tf24trn)
+```
+
+The modeling exercise (using RF, GBM, and 10-fold cross-validation) was completed with this smaller feature set. Predictions on the validation set yielded accuracies of **99.25% for RF** and **96% for GBM**.
+
+```{r RF with 24 Features,cache=TRUE,warning=FALSE,message=FALSE}
+set.seed(3233)
+rf24model<-train(classe~.,method="rf",data=tf24trntrn, trControl=trainControl(method="cv",number=10))
+```
+
+```{r Model Accuracy RF with 24 features,cache=TRUE}
+rf24val<-predict(rf24model,tf24trnval)
+print (paste("Accuracy on validation set, RF with 24 features (%):  ",round(100*sum(rf24val==tf24trnval$classe)/length(rf24val),2)))
+confusionMatrix(rf24val,tf24trnval$classe)$table
+```
+
+```{r GBM with 24 Features, cache=TRUE,warning=FALSE,message=FALSE}
+set.seed(3233)
+gbm24model<-train(classe~.,method="gbm",data=tf24trntrn, verbose=FALSE,trControl=trainControl(method="cv",number=10))
+```
+
+```{r Model Accuracy GBM with 24 Features, cache=TRUE}
+gbm24val<-predict(gbm24model,tf24trnval)
+print(paste("Accuracy on validation set, GBM with 24 features (%):  ",round(100*sum(gbm24val==tf24trnval$classe)/length(gbm24val),2)))
+confusionMatrix(gbm24val,tf24trnval$classe)$table
+```
+
+
+#### Conclusion
+
+The RF model give higher prediction accuracy, and the shorter feature list did not lead to a drop in the 
+accuracy of the predictions.  Therefore, the RF model with 24 features was selected as the final model for the test data.  The predictions on the test data were 100% accurate (as confirmed by the answers to Quiz 4).
+
+
+
